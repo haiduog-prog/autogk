@@ -1,0 +1,7 @@
+pyautogui
+opencv-python
+Pillow
+requests
+keyauth
+pyinstaller
+pydirectinput
