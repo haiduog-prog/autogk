@@ -214,7 +214,7 @@ def find_numbers_in_range(min_val: int, max_val: int, confidence: float = 0.85, 
                 min_y = min(d['y'] for d in grp)
                 max_x = max(d['x'] + d['w'] for d in grp)
                 max_y = max(d['y'] + d['h'] for d in grp)
-                valid_boxes.append((min_x, min_y, max_x - min_x, max_y - min_y))
+                valid_boxes.append({'box': (min_x, min_y, max_x - min_x, max_y - min_y), 'val': num_val_found})
                 
         return valid_boxes
         
@@ -294,7 +294,6 @@ def safe_click(x: int, y: int, log_callback=None):
     WM_LBUTTONUP = 0x0202
     MK_LBUTTON = 0x0001
     
-    # Gửi qua PostMessageW để không bị block thread
     user32.PostMessageW(target_hwnd, WM_MOUSEMOVE, 0, lparam)
     time.sleep(0.05)
     user32.PostMessageW(target_hwnd, WM_LBUTTONDOWN, MK_LBUTTON, lparam)
@@ -302,6 +301,60 @@ def safe_click(x: int, y: int, log_callback=None):
     user32.PostMessageW(target_hwnd, WM_LBUTTONUP, 0, lparam)
     
     log("[Debug-Click] --- Đã gửi Click Ngầm thành công ---")
+
+def safe_scroll(amount: int, x: int, y: int, log_callback=None):
+    """
+    Cuộn chuột ngầm (Background Scroll) không chiếm dụng trỏ chuột vật lý.
+    amount: > 0 cuộn lên, < 0 cuộn xuống
+    x, y: tọa độ điểm nhấn trên mục cần cuộn (Screen coords).
+    """
+    import ctypes
+    user32 = ctypes.windll.user32
+    
+    target_hwnd = 0
+    def foreach_window(hwnd, lParam):
+        nonlocal target_hwnd
+        if user32.IsWindowVisible(hwnd):
+            length = user32.GetWindowTextLengthW(hwnd)
+            if length > 0:
+                buff = ctypes.create_unicode_buffer(length + 1)
+                user32.GetWindowTextW(hwnd, buff, length + 1)
+                title = buff.value.upper()
+                if "FC ONLINE" in title or "FIFA ONLINE" in title or "EA SPORTS" in title:
+                    target_hwnd = hwnd
+                    return False
+        return True
+    
+    EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int))
+    user32.EnumWindows(EnumWindowsProc(foreach_window), 0)
+    
+    if not target_hwnd:
+        return
+        
+    class POINT(ctypes.Structure):
+        _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+    pt = POINT(x, y)
+    user32.ScreenToClient(target_hwnd, ctypes.byref(pt))
+    client_x, client_y = pt.x, pt.y
+    
+    # Định vị tọa độ ngầm (lParam movement requires Client Coordinates)
+    lparam_move = ((client_y & 0xFFFF) << 16) | (client_x & 0xFFFF)
+    user32.PostMessageW(target_hwnd, 0x0200, 0, lparam_move)
+    time.sleep(0.05)
+    
+    # Cuộn ngầm (lParam WM_MOUSEWHEEL requires Screen Coordinates)
+    lparam_scroll = ((y & 0xFFFF) << 16) | (x & 0xFFFF)
+    wparam_scroll = ((amount & 0xFFFF) << 16) | 0
+    
+    # Có thể cần phái lặp nhiều lần WM_MOUSEWHEEL cho mượt nếu amount lớn
+    # vì hệ điều hành giới hạn 1 lần scroll ngắn
+    step_delta = 120 if amount > 0 else -120
+    times_to_scroll = max(1, abs(amount) // 120)
+    
+    wparam_step = ((step_delta & 0xFFFF) << 16) | 0
+    for _ in range(times_to_scroll):
+        user32.PostMessageW(target_hwnd, 0x020A, wparam_step, lparam_scroll)
+        time.sleep(0.01)
 
 def click_image(image_path: str, confidence: float = 0.8, delay: float = 0.5, scale_percent: int = 100) -> bool:
     """Tìm vị trí ảnh mẫu và tiến hành click chuột"""

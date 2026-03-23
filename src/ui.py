@@ -69,7 +69,8 @@ class AppUI:
         r2 = tk.Frame(self.setup_frame)
         r2.pack(fill=tk.X, pady=2)
         tk.Label(r2, text="Số lượng phôi nâng cấp:", width=20, anchor="w", font=font_default).pack(side=tk.LEFT)
-        tk.Spinbox(r2, from_=1, to=10, width=5, font=font_default).pack(side=tk.LEFT, padx=(0, 15))
+        self.quantity_var = tk.IntVar(value=5)
+        tk.Spinbox(r2, from_=1, to=10, textvariable=self.quantity_var, width=5, font=font_default).pack(side=tk.LEFT, padx=(0, 15))
         tk.Checkbutton(r2, text="Nâng cấp nhanh (Space)", font=font_default).pack(side=tk.LEFT)
         
         # Row 3
@@ -246,10 +247,19 @@ class AppUI:
         
         try:
             target_lvl = self.target_level_var.get()
+            qty = self.quantity_var.get()
+            ovr_min = self.ovr_from_var.get()
+            ovr_max = self.ovr_to_var.get()
         except ValueError:
-            target_lvl = 13
+            target_lvl, qty, ovr_min, ovr_max = 13, 5, 110, 115
             
-        self.workflow_thread = AutomationWorkflow(target_level=target_lvl, log_callback=self.log_message)
+        self.workflow_thread = AutomationWorkflow(
+            target_level=target_lvl, 
+            quantity=qty, 
+            ovr_min=ovr_min, 
+            ovr_max=ovr_max, 
+            log_callback=self.log_message
+        )
         self.workflow_thread.start()
         
         self.root.after(1500, self.show_overlay)

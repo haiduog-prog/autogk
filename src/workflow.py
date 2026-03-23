@@ -2,7 +2,9 @@ import threading
 import time
 import ctypes
 import pyautogui
-from .vision_core import wait_for_image, click_image, find_image, find_image_box, draw_red_box_on_screen, safe_click, capture_screen
+import cv2
+import numpy as np
+from .vision_core import wait_for_image, click_image, find_image, find_image_box, draw_red_box_on_screen, safe_click, safe_scroll, capture_screen, find_numbers_in_range
 
 def focus_game_window(log_callback=print):
     """Tìm và đưa cửa sổ game FC Online lên trên cùng (focus)."""
@@ -38,56 +40,140 @@ def focus_game_window(log_callback=print):
         log_callback("[System] Không tìm thấy cửa sổ game FC Online! Vui lòng bật game.")
 
 class AutomationWorkflow(threading.Thread):
-    """
-    Quản lý luồng kịch bản Ép thẻ (Upgrade) cho FC Online.
-    Chạy đa luồng (Thread) để không làm block Main UI Loop của Tkinter.
-    """
-    def __init__(self, target_level: int = 5, log_callback=None):
+    def __init__(self, target_level: int = 5, quantity: int = 5, ovr_min: int = 110, ovr_max: int = 115, log_callback=None):
         super().__init__()
         self.daemon = True # Thread tự kill khi App thoát
         self._is_running = False
         self.target_level = target_level
+        self.quantity = quantity
+        self.ovr_min = ovr_min
+        self.ovr_max = ovr_max
         self.log_callback = log_callback if log_callback else print
 
     def stop(self):
-        """Hạ cờ is_running để dừng vòng lặp an toàn."""
         self._is_running = False
         self.log_callback("[System] Đang gửi lệnh Dừng. Vui lòng đợi hoàn tất chu kỳ lệnh...")
 
+    def _pick_materials(self):
+        self.log_callback(f"[Quá trình ưu tiên] Bắt đầu tìm {self.quantity} phôi từ OVR {self.ovr_min} đến {self.ovr_max}...")
+        picked_count = 0
+        
+        # Cuộn ngầm (background) lên đỉnh danh sách 1 lần duy nhất ở đầu session
+        screen_w, screen_h = pyautogui.size()
+        list_x = int(screen_w * 0.75)
+        list_y = int(screen_h * 0.4)
+        safe_scroll(6000, list_x, list_y, log_callback=None)
+        time.sleep(0.8)
+        
+        # 1: Cuộn xuống, -1: Cuộn lên (Zig-zag)
+        scroll_dir = -1 
+        
+        # Quét từng OVR từ thấp đến cao (tìm bé nhất trước)
+        for target_ovr in range(self.ovr_min, self.ovr_max + 1):
+            if picked_count >= self.quantity or not self._is_running:
+                break
+                
+            self.log_callback(f"► Quét tìm OVR {target_ovr} (hướng cuộn: {'xuống' if scroll_dir == -1 else 'lên'})...")
+            
+            reached_end = False
+            last_screen = None
+            
+            while not reached_end and self._is_running and picked_count < self.quantity:
+                if find_image("assets/fullPersentUpgrade.png", confidence=0.8):
+                    self.log_callback("► Vạch upgrade đã đầy! Dừng chọn lập tức.")
+                    return
+
+                # CHỈ tìm đích danh target_ovr này
+                results = find_numbers_in_range(target_ovr, target_ovr, confidence=0.7)
+                
+                if results:
+                    for item in results:
+                        if picked_count >= self.quantity: break
+                        bx, by, bw, bh = item['box']
+                        
+                        cx, cy = bx + bw//2, by + bh//2
+                        safe_click(cx, cy, log_callback=None)
+                        
+                        picked_count += 1
+                        self.log_callback(f"  -> Đã CLCK phôi OVR {target_ovr} (Tổng: {picked_count}/{self.quantity})")
+                        time.sleep(0.4)
+                    
+                    # Cuộn đi một đoạn xa hơn để tránh bấm đúp
+                    safe_scroll(750 * scroll_dir, list_x, list_y, log_callback=None)
+                    time.sleep(0.6)
+                    continue 
+                    
+                # Cuộn nhanh nếu không thấy
+                current_screen = capture_screen()
+                if last_screen is not None:
+                    diff = cv2.absdiff(current_screen, last_screen)
+                    if np.count_nonzero(diff) < 2000: # Màn hình không đổi -> Đã kịch đường (đỉnh hoặc đáy)
+                        reached_end = True
+                        self.log_callback(f"  -> Hết danh sách chiều {'xuống' if scroll_dir == -1 else 'lên'}.")
+                        
+                last_screen = current_screen
+                if not reached_end:
+                    safe_scroll(1000 * scroll_dir, list_x, list_y, log_callback=None)
+                    time.sleep(0.4)
+            
+            # Đảo chiều cuộn từ xuống thành lên (chữ chi/zig-zag) để tiện đường tìm OVR tiếp theo
+            scroll_dir *= -1
+                    
+        self.log_callback(f"[Hoàn tất] Đã chọn xong {picked_count} phôi.")
+
     def run(self):
-        """Kịch bản Nâng Cấp Thẻ FC Online"""
         self._is_running = True
         
-        # Focus game window
         focus_game_window(self.log_callback)
-        time.sleep(1.0) # Đợi 1 chút để màn hình game hiện ra
+        time.sleep(1.0) 
         
         self.log_callback(f"[Khởi động] Bắt đầu Nâng Cấp Thẻ. Mục tiêu: Cấp +{self.target_level}")
+
         
         try:
             while self._is_running:
-                # 1. Chờ vạch nguyên liệu đầy (fullPersentUpgrade.png)
-                self.log_callback("1. Đang đợi thanh nguyên liệu đầy tỉ lệ (fullPersentUpgrade.png)...")
-                # timeout ngắn để check Stop Event mỗi vòng
-                coords = wait_for_image("assets/fullPersentUpgrade.png", timeout=3, confidence=0.8)
-                if not coords:
-                    continue # Bỏ qua, tiếp tục đợi
+                # 0. Kiểm tra nếu nút upgradeButton đã có sẵn (user tự bấm dở)
+                if find_image("assets/upgradeButton.png", confidence=0.8):
+                    self.log_callback("► Phát hiện nút Nâng cấp (upgradeButton) có sẵn, bấm ngay lập tức!")
+                    click_image("assets/upgradeButton.png", confidence=0.8, delay=3.0)
+                    pass # Đi thẳng xuống bước chờ kết quả ở dưới
+                else:
+                    # 1. Tìm và chọn phôi theo cài đặt (Auto Pick Materials)
+                    self.log_callback("1. Bắt đầu tìm và chọn phôi tự động...")
+                    self._pick_materials()
                     
-                if not self._is_running: break
-                
-                # Nút 'Tiếp theo'
-                self.log_callback("► Đã lấp đầy tỷ lệ. Bấm [Tiếp theo]")
-                click_image("assets/continueButton.png", confidence=0.8, delay=1.0)
-                if not self._is_running: break
-                
-                # Nút 'Tiến hành'
-                self.log_callback("► Bấm [Tiến hành]")
-                click_image("assets/processButton.png", confidence=0.8, delay=1.0)
-                if not self._is_running: break
-                
-                # Nút 'Nâng cấp'
-                self.log_callback("► Bấm Xác nhận (upgradeButton)")
-                click_image("assets/upgradeButton.png", confidence=0.8, delay=3.0) 
+                    if not self._is_running: break
+                    
+                    # Đợi nút Tiếp theo sáng lên hoặc xuất hiện
+                    time.sleep(1.0)
+                    
+                    # Nút 'Tiếp theo'
+                    self.log_callback("► Bấm [Tiếp theo]")
+                    try:
+                        click_image("assets/continueButton.png", confidence=0.8, delay=1.0)
+                    except Exception:
+                        self.log_callback("[System Lỗi] Không tìm thấy nút Tiếp theo (chưa đủ phôi hoặc lỗi do lag).")
+                        time.sleep(2)
+                        continue
+
+                    if not self._is_running: break
+                    
+                    # Nút 'Tiến hành'
+                    self.log_callback("► Bấm [Tiến hành]")
+                    try:
+                        click_image("assets/processButton.png", confidence=0.8, delay=1.0)
+                    except:
+                        pass
+                        
+                    if not self._is_running: break
+                    
+                    # Nút 'Nâng cấp'
+                    self.log_callback("► Bấm Xác nhận (upgradeButton)")
+                    try:
+                        click_image("assets/upgradeButton.png", confidence=0.8, delay=3.0) 
+                    except:
+                        pass
+                        
                 if not self._is_running: break
                 
                 # Kiểm tra kết quả
@@ -105,8 +191,20 @@ class AutomationWorkflow(threading.Thread):
 
                 # Bấm 'afterUpgrade.png'
                 self.log_callback("► Bấm [Kế tiếp / Xong] sau khi đập thẻ")
-                click_image("assets/afterUpgrade.png", confidence=0.8, delay=2.0)
+                try:
+                    click_image("assets/afterUpgrade.png", confidence=0.8, delay=2.0)
+                except:
+                    pass
                 if not self._is_running: break
+                
+                # Kiểm tra xem có nút "Tiếp theo" (btnNext.png) để đập thẻ lần nữa không
+                if find_image("assets/btnNext.png", confidence=0.8):
+                    self.log_callback("► Phát hiện nút [Tiếp tục đập thẻ] (btnNext.png). Đang bấm để quay về chọn phôi...")
+                    try:
+                        click_image("assets/btnNext.png", confidence=0.8, delay=2.0)
+                    except: pass
+                    time.sleep(1.0)
+                    continue # Bắt đầu ngay lại vòng lặp từ bước tìm phôi!
                 
                 # Khảo sát mức thẻ ở màn hình chính
                 self.log_callback(f"3. Kiểm tra mục tiêu: +{self.target_level} tại màn hình chính...")
