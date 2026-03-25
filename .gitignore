@@ -41,3 +41,9 @@ venv.bak/
 # OS files
 .DS_Store
 Thumbs.db
+
+# User Application Data & Logs
+config.json
+*.log
+calc_results.json
+*.spec

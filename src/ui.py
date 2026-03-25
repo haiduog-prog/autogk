@@ -1,5 +1,9 @@
+import os
+import sys
 import tkinter as tk
 from tkinter import ttk
+import json
+import os
 from .workflow import AutomationWorkflow, GLXHWorkflow
 from .vision_core import find_image_box, find_numbers_in_range
 
@@ -14,6 +18,10 @@ class AppUI:
         self.glxh_thread = None
         self.overlay_window = None
         self.build_ui()
+        self.load_config()
+
+        # Đảm bảo cleanup khi đóng cửa sổ
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         
     def build_ui(self):
         self.main_container = tk.Frame(self.root, padx=10, pady=5)
@@ -134,11 +142,17 @@ class AppUI:
         bc = tk.Frame(self.btn_frame)
         bc.pack(anchor=tk.CENTER)
         
-        self.btn_start = tk.Button(bc, text="Bật Auto", command=self.start_auto, bg="green", fg="white", width=15, font=("Arial", 9, "bold"))
-        self.btn_start.pack(side=tk.LEFT, padx=20)
+        self.btn_start = tk.Button(bc, text="Bật Auto", command=self.start_auto, bg="green", fg="white", width=12, font=("Arial", 9, "bold"))
+        self.btn_start.pack(side=tk.LEFT, padx=5)
         
-        self.btn_stop = tk.Button(bc, text="Tắt Auto", command=self.stop_auto, bg="gray", width=15, font=("Arial", 9, "bold"), state=tk.DISABLED)
-        self.btn_stop.pack(side=tk.LEFT, padx=20)
+        self.btn_stop = tk.Button(bc, text="Tắt Auto", command=self.stop_auto, bg="gray", width=12, font=("Arial", 9, "bold"), state=tk.DISABLED)
+        self.btn_stop.pack(side=tk.LEFT, padx=5)
+        
+        self.btn_pause = tk.Button(bc, text="Tạm Dừng", command=self.toggle_pause, bg="orange", width=12, font=("Arial", 9, "bold"), state=tk.DISABLED)
+        self.btn_pause.pack(side=tk.LEFT, padx=5)
+        
+        self.btn_debug = tk.Button(bc, text="Mở Debug", command=self.toggle_debug, bg="black", fg="white", width=12, font=("Arial", 9, "bold"))
+        self.btn_debug.pack(side=tk.LEFT, padx=5)
         
         # ====== 4. Status Labels ======
         self.st_frame = tk.Frame(self.main_container)
@@ -181,53 +195,13 @@ class AppUI:
         # Xóa các shape cũ trên Canvas
         self.overlay_canvas.delete("all")
 
-        try:
-            min_val = self.ovr_from_var.get()
-            max_val = self.ovr_to_var.get()
-        except Exception:
-            min_val, max_val = 110, 115
-            
-        header_box = find_image_box("assets/upgradeHeader.png", confidence=0.7)
-        bg_box = find_image_box("assets/upgradeBg.png", confidence=0.7)
-        # Nâng confidence lên 0.9 để nhận diện tuyệt đối chính xác chữ iOvr.png, tránh bị dính rác sang các chữ OVR khác
-        iovr_box = find_image_box("assets/iOvr.png", confidence=0.9)
-        
-        region = None
-        if header_box and bg_box and iovr_box:
-            y1 = min(header_box[1], bg_box[1])
-            y2 = max(header_box[1] + header_box[3], bg_box[1] + bg_box[3])
-            
-            ix, iy, iw, ih = iovr_box
-            # Gỡ bỏ lề âm/dương, ôm vừa khít 100% độ rộng ảnh iOvr.png như bạn muốn
-            x1 = ix
-            x2 = ix + iw
-            region = (x1, y1, x2, y2)
-            
-            # Vẽ giới hạn quét cụ thể của cột OVR màu xanh
-            self.overlay_canvas.create_rectangle(x1, y1, x2, y2, outline="blue", width=3, dash=(5, 5))
-            
-            # Vẽ khung lớn đỏ
-            rx_min, ry_min = min(header_box[0], bg_box[0]), min(header_box[1], bg_box[1])
-            rx_max, ry_max = max(header_box[0]+header_box[2], bg_box[0]+bg_box[2]), max(header_box[1]+header_box[3], bg_box[1]+bg_box[3])
-            self.overlay_canvas.create_rectangle(rx_min, ry_min, rx_max, ry_max, outline="red", width=2, dash=(2, 4))
-
-        elif header_box and bg_box:
-            rx_min, ry_min = min(header_box[0], bg_box[0]), min(header_box[1], bg_box[1])
-            rx_max, ry_max = max(header_box[0]+header_box[2], bg_box[0]+bg_box[2]), max(header_box[1]+header_box[3], bg_box[1]+bg_box[3])
-            region = (rx_min, ry_min, rx_max, ry_max)
-            self.overlay_canvas.create_rectangle(rx_min, ry_min, rx_max, ry_max, outline="red", width=3, dash=(5, 5))
-
-        boxes = find_numbers_in_range(min_val, max_val, confidence=0.65, region=region)
-            
-        if boxes:
-            for box in boxes:
-                x, y, w, h = box
-                pad = 4
-                self.overlay_canvas.create_rectangle(x - pad, y - pad, x + w + pad, y + h + pad, outline="red", width=4)
-                
+        # Theo yêu cầu, tắt toàn bộ các khung bounding box (viền đỏ/xanh/vàng)
+        # để giao diện trở nên gọn gàng sạch sẽ.
+        # Luồng UI giờ chỉ chạy ngầm giữ window trong suốt.
+        pass
         # Lặp lại sau mỗi 1000ms nếu auto đang bật
         if self.workflow_thread is not None and self.workflow_thread.is_alive():
-            self.root.after(200, self.show_overlay)
+            self.root.after(400, self.show_overlay)
 
     def hide_overlay(self):
         if self.overlay_window is not None:
@@ -243,6 +217,7 @@ class AppUI:
             
         self.btn_start.config(state=tk.DISABLED)
         self.btn_stop.config(state=tk.NORMAL)
+        self.btn_pause.config(state=tk.NORMAL, text="Tạm Dừng", bg="orange")
         self.lbl_status.config(text="đang chạy auto...", fg="green")
         
         try:
@@ -268,9 +243,34 @@ class AppUI:
         if self.workflow_thread is not None and self.workflow_thread.is_alive():
             self.workflow_thread.stop()
             self.btn_stop.config(state=tk.DISABLED)
+            self.btn_pause.config(state=tk.DISABLED, text="Tạm Dừng", bg="orange")
             self.hide_overlay()
             
             self.check_thread_alive()
+
+    def toggle_pause(self):
+        if self.workflow_thread is not None and self.workflow_thread.is_alive():
+            if not getattr(self.workflow_thread, '_is_paused', False):
+                self.workflow_thread.pause()
+                self.btn_pause.config(text="Tiếp Tục", bg="yellow", fg="black")
+            else:
+                self.workflow_thread.resume()
+                self.btn_pause.config(text="Tạm Dừng", bg="orange", fg="black")
+
+    def toggle_debug(self):
+        import ctypes
+        import sys
+        if not getattr(self, 'debug_open', False):
+            ctypes.windll.kernel32.AllocConsole()
+            sys.stdout = open("CONOUT$", "w")
+            sys.stderr = open("CONOUT$", "w")
+            print("[System] Đã mở cửa sổ Terminal Debug.")
+            self.debug_open = True
+            self.btn_debug.config(text="Tắt Debug", bg="gray", fg="white")
+        else:
+            ctypes.windll.kernel32.FreeConsole()
+            self.debug_open = False
+            self.btn_debug.config(text="Mở Debug", bg="black", fg="white")
 
     def check_thread_alive(self):
         if self.workflow_thread.is_alive():
@@ -278,6 +278,7 @@ class AppUI:
         else:
             self.btn_start.config(state=tk.NORMAL)
             self.btn_stop.config(state=tk.DISABLED)
+            self.btn_pause.config(state=tk.DISABLED, text="Tạm Dừng", bg="orange")
             self.lbl_status.config(text="chưa bật auto!", fg="red")
             self.hide_overlay()
 
@@ -308,3 +309,55 @@ class AppUI:
             self.btn_stop_glxh.config(state=tk.DISABLED)
             self.btn_start.config(state=tk.NORMAL)
             self.lbl_status.config(text="chưa bật auto!", fg="red")
+
+    def load_config(self):
+        config_path = "config.json"
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                if "target_level" in cfg:
+                    self.target_level_var.set(cfg["target_level"])
+                if "quantity" in cfg:
+                    self.quantity_var.set(cfg["quantity"])
+                if "ovr_from" in cfg:
+                    self.ovr_from_var.set(cfg["ovr_from"])
+                if "ovr_to" in cfg:
+                    self.ovr_to_var.set(cfg["ovr_to"])
+            except Exception as e:
+                print(f"[UI] Lỗi khi đọc config.json: {e}")
+
+    def save_config(self):
+        config_path = "config.json"
+        try:
+            cfg = {
+                "target_level": self.target_level_var.get(),
+                "quantity": self.quantity_var.get(),
+                "ovr_from": self.ovr_from_var.get(),
+                "ovr_to": self.ovr_to_var.get()
+            }
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump(cfg, f, indent=4)
+        except Exception as e:
+            print(f"[UI] Lỗi khi lưu config.json: {e}")
+
+    def _on_close(self):
+        """Dừng mọi thread và force kill process khi đóng cửa sổ."""
+        self.save_config()
+        # Dừng workflow threads
+        if self.workflow_thread and self.workflow_thread.is_alive():
+            self.workflow_thread.stop()
+        if self.glxh_thread and self.glxh_thread.is_alive():
+            self.glxh_thread.stop()
+
+        # Huỷ overlay nếu có
+        self.hide_overlay()
+
+        # Đóng cửa sổ Tkinter
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+
+        # Force kill toàn bộ process (bao gồm daemon threads, EasyOCR reader, etc.)
+        os._exit(0)
